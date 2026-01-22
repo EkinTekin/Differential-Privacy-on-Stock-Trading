@@ -1,0 +1,183 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+# =============================================================================
+# AYARLAR VE SABİTLER
+# =============================================================================
+FILE_NAME = 'synthetic_stock_trades.csv'
+N_RUNS = 1000           # Simülasyon sayısı (Monte Carlo)
+DELTA = 1e-5            # Gaussian mekanizması için hata payı
+EPSILON_LIST = [0.5, 2.0] # Test edilecek gizlilik bütçeleri
+CLIPPING_THRESHOLD = 20000 # "Balina" koruması için üst sınır
+
+# =============================================================================
+# ADIM 1: VERİ YÜKLEME VE TEMİZLİK
+# =============================================================================
+print("\n" + "="*50)
+print("ADIM 1: VERİ SETİ YÜKLENİYOR...")
+print("="*50)
+
+try:
+    df = pd.read_csv(FILE_NAME)
+    
+    
+    cols_to_keep = ['timestamp', 'ticker', 'broker_id', 'quantity', 'trade_value', 'sector']
+    df = df[cols_to_keep]
+    
+    
+    df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce')
+    df['trade_value'] = pd.to_numeric(df['trade_value'], errors='coerce')
+    df = df.dropna(subset=['quantity', 'trade_value'])
+    
+    print(f"✅ Başarılı. Toplam {len(df)} satır işlem verisi işlendi.")
+    
+except FileNotFoundError:
+    print(f"❌ HATA: '{FILE_NAME}' dosyası bulunamadı.")
+    exit()
+
+# =============================================================================
+# ADIM 2: HASSASİYET ANALİZİ (PRE-ANALYSIS)
+# =============================================================================
+
+print("\n" + "="*50)
+
+print("ADIM 2: HASSASİYET VE OUTLIER ANALİZİ")
+
+print("="*50)
+
+raw_sensitivity = df['quantity'].max()
+most_active_broker = df['broker_id'].mode()[0]
+raw_true_sum = df[df['broker_id'] == most_active_broker]['quantity'].sum()
+
+print(f" [Ham Veri Analizi]")
+print(f"   * Maksimum Tekil İşlem (Global Sensitivity): {raw_sensitivity:,.0f} Lot")
+print(f"   * '{most_active_broker}' Toplam Hacmi: {raw_true_sum:,.0f} Lot")
+
+print(f"   --> YENİ SINIR: {CLIPPING_THRESHOLD}")
+
+# Clipping Technic
+df['clipped_quantity'] = df['quantity'].clip(upper=CLIPPING_THRESHOLD)
+final_sensitivity = CLIPPING_THRESHOLD
+final_true_sum = df[df['broker_id'] == most_active_broker]['clipped_quantity'].sum()
+
+print(f"\n [Clipping Sonrası Parametreler]")
+print(f"   * Sabitlenen Hassasiyet (Delta f): {final_sensitivity}")
+print(f"   * Hedef Sorgu Sonucu (Ground Truth): {final_true_sum:,.0f}")
+
+
+# =============================================================================
+# ADIM 3: MEKANİZMA SİMÜLASYONLARI (LAPLACE vs GAUSSIAN)
+# =============================================================================
+print("\n" + "="*50)
+print("ADIM 3: SİMÜLASYONLAR (Total Volume)")
+print("="*50)
+
+def run_simulation(mechanism, true_val, sens, eps, delta=1e-5, runs=1000):
+    noise_list = []
+    for _ in range(runs):
+        if mechanism == 'Laplace':
+            scale = sens / eps
+            noise = np.random.laplace(0, scale)
+        elif mechanism == 'Gaussian':
+            sigma = np.sqrt(2 * np.log(1.25 / delta)) * (sens / eps)
+            noise = np.random.normal(0, sigma)
+        noise_list.append(noise)
+    
+    noise_arr = np.array(noise_list)
+    # Metrikler
+    mae = np.mean(np.abs(noise_arr))
+    rmse = np.sqrt(np.mean(noise_arr**2))
+    rel_err = (mae / true_val) * 100
+    
+    return mae, rmse, rel_err
+
+results = []
+
+print(f"{'Mekanizma':<10} | {'Epsilon':<5} | {'MAE (Hata)':<12} | {'RMSE':<12} | {'Hata %':<8}")
+print("-" * 60)
+
+for eps in EPSILON_LIST:
+    # 1. Laplace
+    l_mae, l_rmse, l_err = run_simulation('Laplace', final_true_sum, final_sensitivity, eps, runs=N_RUNS)
+    results.append({'Mech': 'Laplace', 'Eps': eps, 'MAE': l_mae, 'Val': l_err})
+    print(f"{'Laplace':<10} | {eps:<5} | {l_mae:,.0f}<12 | {l_rmse:,.0f}<12 | %{l_err:.3f}")
+
+    # 2. Gaussian
+    g_mae, g_rmse, g_err = run_simulation('Gaussian', final_true_sum, final_sensitivity, eps, delta=DELTA, runs=N_RUNS)
+    results.append({'Mech': 'Gaussian', 'Eps': eps, 'MAE': g_mae, 'Val': g_err})
+    print(f"{'Gaussian':<10} | {eps:<5} | {g_mae:,.0f}<12 | {g_rmse:,.0f}<12 | %{g_err:.3f}")
+
+
+# =============================================================================
+# ADIM 4: EK SORGULAR (HISTOGRAM & ORTALAMA)
+# =============================================================================
+print("\n" + "="*50)
+print("ADIM 4: Sektörel Dağılım ve Ortalama Analizi")
+print("="*50)
+
+# A. Histogram (Sektörler)
+print("\n[A] Histogram Sorgusu (Sektörel Dağılım)")
+sector_counts = df['sector'].value_counts()
+sens_hist = 1  # Count sorgusu hassasiyeti her zaman 1'dir
+target_eps = 1.0
+
+noisy_hist = {}
+print(f"{'Sektör':<20} | {'Gerçek':<8} | {'DP Sonuç':<8} | {'Fark'}")
+for sec, count in sector_counts.items():
+    noise = np.random.laplace(0, sens_hist / target_eps)
+    dp_val = int(max(0, count + noise))
+    noisy_hist[sec] = dp_val
+    print(f"{sec:<20} | {count:<8} | {dp_val:<8} | {abs(count-dp_val)}")
+
+# B. Ortalama (Average)
+print("\n[B] Ortalama Sorgusu (Technology Sektörü)")
+tech_vals = df[df['sector'] == 'Technology']['trade_value'].clip(upper=100000) # Clipping for value
+true_avg = tech_vals.mean()
+
+# DP Ortalama: (Noisy Sum / Noisy Count)
+eps_split = 1.0 / 2
+n_sum = tech_vals.sum() + np.random.laplace(0, 100000 / eps_split)
+n_cnt = len(tech_vals) + np.random.laplace(0, 1 / eps_split)
+dp_avg = n_sum / n_cnt
+
+print(f"Gerçek Ortalama: ${true_avg:,.2f}")
+print(f"DP Ortalama:     ${dp_avg:,.2f}")
+print(f"Sapma:           ${abs(true_avg - dp_avg):,.2f}")
+
+
+# =============================================================================
+# ADIM 5: GÖRSELLEŞTİRME
+# =============================================================================
+print("\n" + "="*50)
+print("ADIM 5: Grafikler Oluşturuluyor...")
+print("="*50)
+
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+
+# Grafik 1: MAE Karşılaştırması (Laplace vs Gaussian)
+df_res = pd.DataFrame(results)
+pivot_res = df_res.pivot(index='Eps', columns='Mech', values='MAE')
+pivot_res.plot(kind='bar', ax=ax1, color=['red', 'blue'], alpha=0.7)
+ax1.set_title('Hata Karşılaştırması (MAE)\nLaplace vs Gaussian')
+ax1.set_ylabel('Ortalama Mutlak Hata (Lot)')
+ax1.set_xlabel('Epsilon (Gizlilik Bütçesi)')
+ax1.grid(axis='y', linestyle='--', alpha=0.3)
+
+# Grafik 2: Histogram (Sektörler)
+sectors = list(noisy_hist.keys())
+real_v = [sector_counts[s] for s in sectors]
+noisy_v = [noisy_hist[s] for s in sectors]
+x = np.arange(len(sectors))
+
+ax2.bar(x - 0.2, real_v, 0.4, label='Gerçek Veri', color='gray')
+ax2.bar(x + 0.2, noisy_v, 0.4, label='DP (Gürültülü)', color='green')
+ax2.set_title(f'Sektörel Dağılım (Epsilon={target_eps})')
+ax2.set_xticks(x)
+ax2.set_xticklabels(sectors, rotation=45, ha='right')
+ax2.legend()
+
+plt.tight_layout()
+plt.show()
+
+print("✅ Raporlama tamamlandı.")

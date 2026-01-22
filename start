@@ -1,0 +1,29 @@
+import pandas as pd
+import numpy as np
+
+# --- 1. VERİYİ YÜKLEME ---
+FILE_NAME = 'synthetic_stock_trades.csv'
+df = pd.read_csv(FILE_NAME)
+
+# Veri Temizliği (Sayısal hale getirme)
+df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce')
+df = df.dropna(subset=['quantity'])
+
+# --- 2. DEĞERLERİ HESAPLAMA ---
+
+# A. Global Hassasiyet (Delta f)
+# Verisetindeki en büyük tekil işlem hacmi (Max Value)
+# Çıktıdaki 19787 buradan gelir.
+global_sensitivity = df['quantity'].max()
+
+# B. Orijinal Sorgu Sonucu (f(D))
+# En aktif broker'ın (muhtemelen BR007) toplam işlem hacmi.
+# Çıktıdaki 4645408 buradan gelir.
+most_active_broker = df['broker_id'].mode()[0]
+original_query_result = df[df['broker_id'] == most_active_broker]['quantity'].sum()
+
+# --- 3. ÇIKTIYI BASMA (Senin paylaştığın kısım) ---
+print("# --- GERÇEK PARAMETRELER ---")
+print(f"GLOBAL_SENSITIVITY = {int(global_sensitivity)}")
+print(f"ORIGINAL_QUERY_RESULT = {int(original_query_result)}")
+print(f"N_RUNS = 1000  # Deneme sayısı")
